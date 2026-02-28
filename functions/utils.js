@@ -1,6 +1,7 @@
 // functions/utils.js
 
 export const KV_NAME = "BITGET_DEMO_KV";
+export const PASSWORD_ITERATIONS = 100000;
 
 export function randomHex(bytes = 16) {
   const arr = new Uint8Array(bytes);
@@ -8,10 +9,11 @@ export function randomHex(bytes = 16) {
   return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function hashPassword(password, salt) {
+export async function hashPassword(password, salt, iterations = PASSWORD_ITERATIONS) {
   const encoder = new TextEncoder();
   const saltBuf = encoder.encode(salt);
   const passwordBuf = encoder.encode(password);
+  const safeIterations = Math.max(1, Math.min(100000, Number(iterations) || PASSWORD_ITERATIONS));
 
   const key = await crypto.subtle.importKey(
     "raw",
@@ -25,7 +27,7 @@ export async function hashPassword(password, salt) {
     {
       name: "PBKDF2",
       salt: saltBuf,
-      iterations: 120000,
+      iterations: safeIterations,
       hash: "SHA-256",
     },
     key,

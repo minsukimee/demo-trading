@@ -1,5 +1,5 @@
 // functions/api/auth/login.js
-import { getKV, getUser, hashPassword, createSession, defaultState } from "../../utils.js";
+import { getKV, getUser, hashPassword, createSession, defaultState, PASSWORD_ITERATIONS } from "../../utils.js";
 
 export async function onRequestPost(context) {
   const kv = getKV(context);
@@ -25,7 +25,8 @@ export async function onRequestPost(context) {
   }
 
   const { salt, passwordHash } = user;
-  const gotHash = await hashPassword(password, salt);
+  const iterations = Number(user.iterations) || PASSWORD_ITERATIONS;
+  const gotHash = await hashPassword(password, salt, iterations);
 
   if (gotHash !== passwordHash) {
     return Response.json({ ok: false, error: "Invalid username or password" }, { status: 401 });

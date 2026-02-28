@@ -1,5 +1,5 @@
 // functions/api/auth/register.js
-import { getKV, getUser, saveUser, hashPassword, createSession, defaultState, randomHex } from "../../utils.js";
+import { getKV, getUser, saveUser, hashPassword, createSession, defaultState, randomHex, PASSWORD_ITERATIONS } from "../../utils.js";
 
 export async function onRequestPost(context) {
   try {
@@ -34,12 +34,13 @@ export async function onRequestPost(context) {
     }
 
     const salt = randomHex(16);
-    const passwordHash = await hashPassword(password, salt);
+    const passwordHash = await hashPassword(password, salt, PASSWORD_ITERATIONS);
 
     const state = structuredClone(defaultState);
     const userData = {
       salt,
       passwordHash,
+      iterations: PASSWORD_ITERATIONS,
       state,
     };
 
