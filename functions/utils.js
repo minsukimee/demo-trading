@@ -2,6 +2,12 @@
 
 export const KV_NAME = "BITGET_DEMO_KV";
 
+export function randomHex(bytes = 16) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
   const saltBuf = encoder.encode(salt);
@@ -32,7 +38,7 @@ export async function hashPassword(password, salt) {
 }
 
 export function generateToken() {
-  return crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+  return randomHex(32) + randomHex(32);
 }
 
 export function getKV(context) {
