@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Bitget Futures Demo Trading</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="main-header">
+      <div class="header-left">
+        <h1>Bitget Futures Demo Trading</h1>
+        <p>Local simulation with Bitget mark price, funding rate, and fee model.</p>
+      </div>
+      <div id="userHeader" class="header-right" style="display: none;">
+        <span id="headerUsername" class="user-badge"></span>
+        <button id="headerLogoutBtn" class="secondary small" type="button">Logout</button>
+      </div>
+    </header>
+
+    <section id="authPanel" class="panel auth-panel">
+      <div class="auth-container">
+        <div class="auth-box">
+          <h2>Account Access</h2>
+          <p class="auth-desc">Login or register to start simulating trades with your personal account.</p>
+          <div class="form-grid auth-grid">
+            <label>Username
+              <input id="authUsername" type="text" autocomplete="username" placeholder="Username" />
+            </label>
+            <label>Password
+              <input id="authPassword" type="password" autocomplete="current-password" placeholder="Password" />
+            </label>
+          </div>
+          <div class="actions auth-actions">
+            <button id="loginBtn" class="primary-btn" type="button">Login</button>
+            <button id="registerBtn" class="secondary" type="button">Register</button>
+          </div>
+          <p id="authStatus" class="note">Please login to access trading panels.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel requires-auth">
+      <h2>New Position</h2>
+      <div class="form-grid">
+        <label>Product Type
+          <select id="productType">
+            <option value="USDT-FUTURES">USDT-FUTURES</option>
+            <option value="COIN-FUTURES">COIN-FUTURES</option>
+            <option value="USDC-FUTURES">USDC-FUTURES</option>
+          </select>
+        </label>
+
+        <label>Symbol (Type to search)
+          <input id="symbol" list="symbolList" placeholder="e.g. BTCUSDT" />
+          <datalist id="symbolList"></datalist>
+        </label>
+
+        <label>Direction
+          <select id="side">
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </label>
+
+        <label>Leverage (1-100)
+          <input id="leverage" type="number" min="1" max="100" value="10" />
+        </label>
+
+        <label>Size (USDT)
+          <input id="sizeUsdt" type="number" min="5" step="0.01" value="100" />
+        </label>
+      </div>
+
+      <div class="stats" id="marketStats"></div>
+
+      <div class="actions">
+        <button id="openPosition" type="button">Open Position</button>
+      </div>
+      <p class="note">
+        Fees default to Bitget futures public rates when available from contract data; otherwise fallback maker 0.02% / taker 0.06%.
+      </p>
+    </section>
+
+    <section class="panel requires-auth">
+      <h2>Open Positions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Lev</th>
+              <th>Unrealized PnL (USDT)</th>
+              <th>ROE (%)</th>
+              <th>Size (USDT)</th>
+              <th>Margin (USDT)</th>
+              <th>MMR (%)</th>
+              <th>Entry (USDT)</th>
+              <th>Mark (USDT)</th>
+              <th>Est Liq (USDT)</th>
+              <th>TP/SL</th>
+              <th>Close</th>
+            </tr>
+          </thead>
+          <tbody id="positionsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel requires-auth">
+      <h2>Account</h2>
+      <div id="accountStats" class="stats"></div>
+      <div class="actions">
+        <button id="resetAccount" class="secondary" type="button">Reset & Re-Deposit 1,000 USDT</button>
+        <button id="fullReset" class="danger" type="button">Full Reset (Clear Everything)</button>
+      </div>
+      <p class="note">Reset is available only when estimated equity is below 100 USDT.</p>
+    </section>
+
+    <section class="panel requires-auth">
+      <h2>Closed Positions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Position PnL (USDT)</th>
+              <th>Position ROI (%)</th>
+              <th>Entry Price (USDT)</th>
+              <th>Exit Price (USDT)</th>
+              <th>Open Time</th>
+              <th>Closed Time</th>
+            </tr>
+          </thead>
+          <tbody id="closedBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js?v=20260228_1"></script>
+</body>
+</html>

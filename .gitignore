@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+tmp_server_out.log
+tmp_server_err.log
+data/accounts.json
