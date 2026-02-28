@@ -11,6 +11,7 @@ const state = {
   currentUser: null,
   authToken: null,
   authMode: "server",
+  isStateDirty: false,
 };
 
 const DEFAULT_MAKER_FEE = 0.0002;
@@ -22,6 +23,7 @@ const WS_RECONNECT_MS = 3000;
 const REST_FALLBACK_INTERVAL_MS = 20000;
 const RECOMPUTE_INTERVAL_MS = 1000;
 const STATE_SAVE_INTERVAL_MS = 5000;
+const ACCOUNT_PULL_INTERVAL_MS = 7000;
 const AUTH_SESSION_KEY = "bitget_demo_trading_session_v2";
 const GUEST_STATE_KEY = "bitget_demo_trading_guest_state_v1";
 const GUEST_AUTH_DB_KEY = "bitget_demo_trading_guest_auth_db_v1";
@@ -60,6 +62,7 @@ function setDefaultAccountState() {
   state.realizedPnl = 0;
   state.editingTpSlId = null;
   state.editingCloseId = null;
+  state.isStateDirty = false;
 }
 
 function getAccountPayload() {
@@ -80,6 +83,11 @@ function getDefaultAccountPayload() {
     positions: [],
     closed: [],
   };
+}
+
+function markStateDirty() {
+  if (!state.currentUser) return;
+  state.isStateDirty = true;
 }
 
 function isStateEmpty(candidate) {
@@ -308,6 +316,7 @@ function loadSession() {
 }
 
 async function savePersistentState() {
+  if (!state.isStateDirty) return;
   if (state.authMode === "guest") {
     const username = state.currentUser;
     if (!username) return;
@@ -317,13 +326,36 @@ async function savePersistentState() {
     user.state = getAccountPayload();
     saveGuestAuthDb(db);
     saveGuestState();
+    state.isStateDirty = false;
     return;
   }
   if (!state.currentUser || !state.authToken) return;
   try {
     await authRequest("/api/account/state", "PUT", { state: getAccountPayload() });
+    state.isStateDirty = false;
   } catch (err) {
     console.error("state save failed", err);
+  }
+}
+
+async function pullPersistentStateIfClean() {
+  if (state.authMode !== "server") return;
+  if (!state.currentUser || !state.authToken) return;
+  if (state.isStateDirty) return;
+  try {
+    const json = await authRequest("/api/account/state", "GET");
+    if (!json || !json.state) return;
+    applyAccountPayload(json.state);
+    for (const pos of [...state.positions]) {
+      recomputePosition(pos);
+    }
+    if (!isInlineEditing()) {
+      renderPositions();
+    }
+    renderClosed();
+    renderAccountStats();
+  } catch (_) {
+    // Ignore transient pull failures.
   }
 }
 
@@ -578,6 +610,7 @@ function isInlineEditing() {
 
 function fullResetAll() {
   setDefaultAccountState();
+  markStateDirty();
   syncWsSubscriptions();
   renderPositions();
   renderClosed();
@@ -835,6 +868,7 @@ function applyLoggedInState(username, token, accountState) {
     saveSession();
   }
   applyAccountPayload(accountState);
+  state.isStateDirty = false;
   for (const pos of [...state.positions]) {
     recomputePosition(pos);
   }
@@ -871,6 +905,7 @@ async function logoutUser(message = "Logged out.") {
   }
   state.currentUser = null;
   state.authToken = null;
+  state.isStateDirty = false;
   if (state.authMode === "guest") {
     saveGuestSession(null);
   } else {
@@ -1046,6 +1081,7 @@ function closePosition(id, reason = "Manual", exitPriceOverride = null, closeTsO
     closeReason: reason,
   });
   state.positions.splice(idx, 1);
+  markStateDirty();
   if (state.editingTpSlId === id) {
     state.editingTpSlId = null;
   }
@@ -1134,6 +1170,7 @@ async function openPosition() {
 
   recomputePosition(pos);
   state.positions.push(pos);
+  markStateDirty();
   syncWsSubscriptions();
   renderPositions();
   renderAccountStats();
@@ -1183,6 +1220,7 @@ function saveTpSl(id) {
 
   pos.tpPrice = tp;
   pos.slPrice = sl;
+  markStateDirty();
   state.editingTpSlId = null;
   renderPositions();
   savePersistentState();
@@ -1207,6 +1245,7 @@ function saveCloseLimit(id) {
   }
 
   pos.closeLimitPrice = limit;
+  markStateDirty();
   state.editingCloseId = null;
   renderPositions();
   savePersistentState();
@@ -1259,6 +1298,7 @@ function bindEvents() {
         if (canMigrateLegacy) {
           clearLegacyGuestState();
           markLegacyServerMigrationDone();
+          markStateDirty();
           savePersistentState();
         }
       } else {
@@ -1272,6 +1312,7 @@ function bindEvents() {
           isStateEmpty(json.state)
         ) {
           applyAccountPayload(legacy);
+          markStateDirty();
           renderPositions();
           renderClosed();
           renderAccountStats();
@@ -1306,6 +1347,7 @@ function bindEvents() {
         isStateEmpty(getAccountPayload())
       ) {
         applyAccountPayload(legacy);
+        markStateDirty();
         renderPositions();
         renderClosed();
         renderAccountStats();
@@ -1395,6 +1437,7 @@ function bindEvents() {
       if (!pos) return;
       pos.tpPrice = null;
       pos.slPrice = null;
+      markStateDirty();
       state.editingTpSlId = null;
       renderPositions();
       savePersistentState();
@@ -1423,6 +1466,7 @@ function bindEvents() {
       const pos = state.positions.find((p) => p.id === id);
       if (!pos) return;
       pos.closeLimitPrice = null;
+      markStateDirty();
       state.editingCloseId = null;
       renderPositions();
       savePersistentState();
@@ -1458,6 +1502,7 @@ function bindEvents() {
     state.nextId = 1;
     state.editingTpSlId = null;
     state.editingCloseId = null;
+    markStateDirty();
     syncWsSubscriptions();
 
     renderPositions();
@@ -1580,6 +1625,10 @@ async function init() {
   setInterval(() => {
     savePersistentState();
   }, STATE_SAVE_INTERVAL_MS);
+
+  setInterval(() => {
+    pullPersistentStateIfClean();
+  }, ACCOUNT_PULL_INTERVAL_MS);
 }
 
 init().catch((err) => {
