@@ -1522,54 +1522,37 @@ async function init() {
   }
 
   const authApiReady = await hasWorkingAuthApi();
-  if (!authApiReady && !isLocalHost) {
-    state.authMode = "guest";
+  state.authMode = "server";
+  const session = loadSession();
+  if (session && authApiReady) {
+    state.authToken = session.token;
+    try {
+      const me = await authRequest("/api/auth/me", "GET");
+      state.currentUser = me.username;
+      els.authUsername.value = me.username;
+      applyAccountPayload(me.state);
+      for (const pos of [...state.positions]) {
+        recomputePosition(pos);
+      }
+      renderAuthStatus(`Session restored for ${me.username}.`);
+    } catch (_) {
+      state.currentUser = null;
+      state.authToken = null;
+      saveSession();
+      setDefaultAccountState();
+      renderAuthStatus("Not logged in. Login or register to start trading.");
+    }
+  } else {
     state.currentUser = null;
     state.authToken = null;
     saveSession();
-    const guestUsername = loadGuestSession();
-    if (guestUsername) {
-      const db = loadGuestAuthDb();
-      const guestUser = db.users[guestUsername];
-      if (guestUser) {
-        applyLoggedInState(guestUsername, null, guestUser.state || null);
-        renderAuthStatus(`Session restored for ${guestUsername} (Guest mode).`);
-      } else {
-        setDefaultAccountState();
-        renderAuthStatus("Guest mode active. Register or login (saved in this browser).");
-      }
+    setDefaultAccountState();
+    if (!authApiReady && isLocalHost) {
+      renderAuthStatus("Local server auth API is unavailable. Start server.py and open http://127.0.0.1:8000");
+    } else if (!authApiReady) {
+      renderAuthStatus("Server auth API is unavailable. Check Cloudflare Pages Functions + BITGET_DEMO_KV binding.");
     } else {
-      setDefaultAccountState();
-      renderAuthStatus("Guest mode active. Register or login (saved in this browser).");
-    }
-  } else {
-    state.authMode = "server";
-    const session = loadSession();
-    if (session) {
-      state.authToken = session.token;
-      try {
-        const me = await authRequest("/api/auth/me", "GET");
-        state.currentUser = me.username;
-        els.authUsername.value = me.username;
-        applyAccountPayload(me.state);
-        for (const pos of [...state.positions]) {
-          recomputePosition(pos);
-        }
-        renderAuthStatus(`Session restored for ${me.username}.`);
-      } catch (_) {
-        state.currentUser = null;
-        state.authToken = null;
-        saveSession();
-        setDefaultAccountState();
-        renderAuthStatus("Not logged in. Login or register to start trading.");
-      }
-    } else {
-      setDefaultAccountState();
-      if (!authApiReady && isLocalHost) {
-        renderAuthStatus("Local server auth API is unavailable. Start server.py and open http://127.0.0.1:8000");
-      } else {
-        renderAuthStatus("Not logged in. Login or register to start trading.");
-      }
+      renderAuthStatus("Not logged in. Login or register to start trading.");
     }
   }
 
