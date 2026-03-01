@@ -342,6 +342,7 @@ async function pullPersistentStateIfClean() {
   if (state.authMode !== "server") return;
   if (!state.currentUser || !state.authToken) return;
   if (state.isStateDirty) return;
+  if (isInlineEditing()) return;
   try {
     const json = await authRequest("/api/account/state", "GET");
     if (!json || !json.state) return;
