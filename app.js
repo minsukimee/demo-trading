@@ -479,6 +479,14 @@ function closePreviewHtml(label, price, pos) {
   return `${label} @ ${priceText} | Est PnL: <span class="${pnlClass}">${pnlText}</span> USDT | Close Fee: ${fmt(closeFee)} USDT`;
 }
 
+function tpSlPreviewHtml(label, price, pos) {
+  const { realizedPnl } = estimateCloseAtPrice(pos, price);
+  const pnlClass = Number.isFinite(realizedPnl) ? (realizedPnl >= 0 ? "good" : "bad") : "";
+  const priceText = Number.isFinite(price) ? fmtPriceFixed(price, pos.pricePrecision) : "-";
+  const pnlText = Number.isFinite(realizedPnl) ? fmt(realizedPnl) : "-";
+  return `${label} @ ${priceText} | Est PnL: <span class="${pnlClass}">${pnlText}</span> USDT`;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -934,6 +942,8 @@ function renderPositions() {
             <input class="tpsl-input" data-role="sl-input" data-id="${p.id}" type="number" step="any" placeholder="SL" value="${slValue}" />
             <button class="secondary" data-action="tpsl-save" data-id="${p.id}">Confirm</button>
             <button class="secondary" data-action="tpsl-cancel" data-id="${p.id}">Cancel</button>
+            <div class="close-preview" data-role="tp-preview" data-id="${p.id}">${tpSlPreviewHtml("TP", p.tpPrice, p)}</div>
+            <div class="close-preview" data-role="sl-preview" data-id="${p.id}">${tpSlPreviewHtml("SL", p.slPrice, p)}</div>
           </div>`
         : `<div class="tpsl-editor">
             <button class="secondary" data-action="tpsl-edit" data-id="${p.id}">${p.tpPrice || p.slPrice ? "Edit" : "TP/SL"}</button>
@@ -1261,6 +1271,24 @@ function updateCloseLimitPreview(id, rawInput) {
   limitPreviewEl.innerHTML = closePreviewHtml("Limit", limitPrice, pos);
 }
 
+function updateTpSlPreview(id, role, rawInput) {
+  const pos = state.positions.find((p) => p.id === id);
+  if (!pos) return;
+  if (role === "tp-input") {
+    const tpEl = els.positionsBody.querySelector(`div[data-role="tp-preview"][data-id="${id}"]`);
+    if (!(tpEl instanceof HTMLElement)) return;
+    const price = rawInput.trim() === "" ? null : Number(rawInput);
+    tpEl.innerHTML = tpSlPreviewHtml("TP", price, pos);
+    return;
+  }
+  if (role === "sl-input") {
+    const slEl = els.positionsBody.querySelector(`div[data-role="sl-preview"][data-id="${id}"]`);
+    if (!(slEl instanceof HTMLElement)) return;
+    const price = rawInput.trim() === "" ? null : Number(rawInput);
+    slEl.innerHTML = tpSlPreviewHtml("SL", price, pos);
+  }
+}
+
 function bindEvents() {
   window.__dtAppBound = true;
   els.registerBtn.addEventListener("click", async () => {
@@ -1477,10 +1505,15 @@ function bindEvents() {
   els.positionsBody.addEventListener("input", (evt) => {
     const target = evt.target;
     if (!(target instanceof HTMLInputElement)) return;
-    if (target.dataset.role !== "close-limit-input") return;
+    const role = target.dataset.role;
+    if (role !== "close-limit-input" && role !== "tp-input" && role !== "sl-input") return;
     const id = Number(target.dataset.id);
     if (!id) return;
-    updateCloseLimitPreview(id, target.value);
+    if (role === "close-limit-input") {
+      updateCloseLimitPreview(id, target.value);
+      return;
+    }
+    updateTpSlPreview(id, role, target.value);
   });
 
   els.resetAccount.addEventListener("click", () => {
