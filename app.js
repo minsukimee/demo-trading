@@ -4,8 +4,11 @@ const state = {
   positions: [],
   closed: [],
   nextId: 1,
+  nextAlertId: 1,
   equityStart: 1000,
   realizedPnl: 0,
+  alerts: [],
+  alertHistory: [],
   editingTpSlId: null,
   editingCloseId: null,
   currentUser: null,
@@ -24,6 +27,7 @@ const REST_FALLBACK_INTERVAL_MS = 20000;
 const RECOMPUTE_INTERVAL_MS = 1000;
 const STATE_SAVE_INTERVAL_MS = 5000;
 const ACCOUNT_PULL_INTERVAL_MS = 7000;
+const ALERT_HISTORY_LIMIT = 300;
 const AUTH_SESSION_KEY = "bitget_demo_trading_session_v2";
 const GUEST_STATE_KEY = "bitget_demo_trading_guest_state_v1";
 const GUEST_AUTH_DB_KEY = "bitget_demo_trading_guest_auth_db_v1";
@@ -58,8 +62,11 @@ function setDefaultAccountState() {
   state.positions = [];
   state.closed = [];
   state.nextId = 1;
+  state.nextAlertId = 1;
   state.equityStart = 1000;
   state.realizedPnl = 0;
+  state.alerts = [];
+  state.alertHistory = [];
   state.editingTpSlId = null;
   state.editingCloseId = null;
   state.isStateDirty = false;
@@ -68,20 +75,26 @@ function setDefaultAccountState() {
 function getAccountPayload() {
   return {
     nextId: state.nextId,
+    nextAlertId: state.nextAlertId,
     equityStart: state.equityStart,
     realizedPnl: state.realizedPnl,
     positions: state.positions,
     closed: state.closed,
+    alerts: state.alerts,
+    alertHistory: state.alertHistory,
   };
 }
 
 function getDefaultAccountPayload() {
   return {
     nextId: 1,
+    nextAlertId: 1,
     equityStart: 1000,
     realizedPnl: 0,
     positions: [],
     closed: [],
+    alerts: [],
+    alertHistory: [],
   };
 }
 
@@ -238,6 +251,9 @@ function applyAccountPayload(parsed) {
   if (Number.isFinite(parsed.nextId) && parsed.nextId > 0) {
     state.nextId = Math.floor(parsed.nextId);
   }
+  if (Number.isFinite(parsed.nextAlertId) && parsed.nextAlertId > 0) {
+    state.nextAlertId = Math.floor(parsed.nextAlertId);
+  }
   if (Number.isFinite(parsed.equityStart) && parsed.equityStart > 0) {
     state.equityStart = Number(parsed.equityStart);
   }
@@ -263,6 +279,30 @@ function applyAccountPayload(parsed) {
       closeTs: Number.isFinite(p.closeTs) ? Number(p.closeTs) : null,
       roiPct: Number.isFinite(p.roiPct) ? Number(p.roiPct) : ((Number(p.marginUsdt) > 0) ? (Number(p.realizedPnl) / Number(p.marginUsdt)) * 100 : 0),
     }));
+  }
+  if (Array.isArray(parsed.alerts)) {
+    state.alerts = parsed.alerts
+      .map((a) => ({
+        id: Number.isFinite(a.id) ? Number(a.id) : null,
+        productType: String(a.productType || ""),
+        symbol: String(a.symbol || ""),
+        direction: a.direction === "below" ? "below" : "above",
+        targetPrice: Number(a.targetPrice),
+        createdTs: Number.isFinite(a.createdTs) ? Number(a.createdTs) : Date.now(),
+      }))
+      .filter((a) => a.id && a.productType && a.symbol && Number.isFinite(a.targetPrice) && a.targetPrice > 0)
+      .slice(0, 2000);
+  }
+  if (Array.isArray(parsed.alertHistory)) {
+    state.alertHistory = parsed.alertHistory
+      .map((h) => ({
+        ...h,
+        triggerTs: Number.isFinite(h.triggerTs) ? Number(h.triggerTs) : Date.now(),
+        targetPrice: Number(h.targetPrice),
+        triggerPrice: Number(h.triggerPrice),
+      }))
+      .filter((h) => h.productType && h.symbol && Number.isFinite(h.targetPrice))
+      .slice(0, ALERT_HISTORY_LIMIT);
   }
 }
 
@@ -354,6 +394,7 @@ async function pullPersistentStateIfClean() {
       renderPositions();
     }
     renderClosed();
+    renderAlerts();
     renderAccountStats();
   } catch (_) {
     // Ignore transient pull failures.
@@ -389,6 +430,11 @@ const els = {
   leverage: document.getElementById("leverage"),
   sizeUsdt: document.getElementById("sizeUsdt"),
   openPosition: document.getElementById("openPosition"),
+  alertDirection: document.getElementById("alertDirection"),
+  alertTargetPrice: document.getElementById("alertTargetPrice"),
+  addAlertBtn: document.getElementById("addAlertBtn"),
+  activeAlerts: document.getElementById("activeAlerts"),
+  alertHistory: document.getElementById("alertHistory"),
   positionsBody: document.getElementById("positionsBody"),
   closedBody: document.getElementById("closedBody"),
   marketStats: document.getElementById("marketStats"),
@@ -531,19 +577,23 @@ async function loadContracts(productType) {
 }
 
 async function loadTickers(productType) {
+  const prevMap = state.tickersByProduct.get(productType) || new Map();
   const json = await bitgetGet("/api/v2/mix/market/tickers", { productType });
   const rows = Array.isArray(json.data) ? json.data : [];
   const map = new Map();
   for (const r of rows) {
     const symbol = r.symbol;
     if (!symbol) continue;
-    map.set(symbol, {
+    const next = {
       markPrice: parseFloat(r.markPrice ?? r.lastPr ?? r.last ?? ""),
       lastPrice: parseFloat(r.lastPr ?? r.last ?? ""),
       fundingRate: parseFloat(r.fundingRate ?? "0"),
       pricePrecision: detectPrecision(r.markPrice ?? r.lastPr ?? r.last ?? ""),
       ts: parseMsTimestamp(r.ts ?? r.systemTime) ?? Date.now(),
-    });
+    };
+    map.set(symbol, next);
+    const prev = prevMap.get(symbol);
+    processAlertsForPrice(productType, symbol, prev?.markPrice, next.markPrice, next.ts);
   }
   state.tickersByProduct.set(productType, map);
 }
@@ -623,6 +673,7 @@ function fullResetAll() {
   syncWsSubscriptions();
   renderPositions();
   renderClosed();
+  renderAlerts();
   renderAccountStats();
   savePersistentState();
 }
@@ -693,13 +744,15 @@ function upsertTickerFromWs(productType, symbol, row) {
   }
   const byProduct = state.tickersByProduct.get(productType);
   const prev = byProduct.get(symbol) || { markPrice: NaN, lastPrice: NaN, fundingRate: 0, pricePrecision: null, ts: null };
-  byProduct.set(symbol, {
+  const next = {
     markPrice: parseFloat(row.markPrice ?? row.lastPr ?? row.last ?? prev.markPrice),
     lastPrice: parseFloat(row.lastPr ?? row.last ?? prev.lastPrice),
     fundingRate: parseFloat(row.fundingRate ?? prev.fundingRate ?? 0),
     pricePrecision: detectPrecision(row.markPrice ?? row.lastPr ?? row.last ?? "") ?? prev.pricePrecision,
     ts: parseMsTimestamp(row.ts ?? row.systemTime) ?? Date.now(),
-  });
+  };
+  byProduct.set(symbol, next);
+  processAlertsForPrice(productType, symbol, prev.markPrice, next.markPrice, next.ts);
 }
 
 function connectMarketWs() {
@@ -841,6 +894,133 @@ function renderAccountStats() {
   els.resetAccount.disabled = equity >= 100;
 }
 
+function alertDirectionLabel(direction) {
+  return direction === "below" ? "<=" : ">=";
+}
+
+function renderAlerts() {
+  if (!els.activeAlerts || !els.alertHistory) return;
+  const activeHtml = state.alerts
+    .slice()
+    .sort((a, b) => b.createdTs - a.createdTs)
+    .map((a) => `<div class="alert-item">
+      <div class="row"><strong>${a.symbol}</strong><span>${a.productType}</span></div>
+      <div class="row"><span>Trigger ${alertDirectionLabel(a.direction)} ${fmtPriceFixed(a.targetPrice, 6)}</span></div>
+      <div class="row"><span>${fmtDateTime(a.createdTs)}</span><button class="secondary small" data-action="alert-remove" data-id="${a.id}">Remove</button></div>
+    </div>`)
+    .join("");
+  els.activeAlerts.innerHTML = activeHtml || `<div class="alert-empty">No active alerts</div>`;
+
+  const historyHtml = state.alertHistory
+    .slice()
+    .reverse()
+    .map((h) => `<div class="alert-item">
+      <div class="row"><strong>${h.symbol}</strong><span>${h.productType}</span></div>
+      <div class="row"><span>Target ${alertDirectionLabel(h.direction)} ${fmtPriceFixed(h.targetPrice, 6)}</span></div>
+      <div class="row"><span>Hit ${fmtPriceFixed(h.triggerPrice, 6)}</span><span>${fmtDateTime(h.triggerTs)}</span></div>
+      <div class="row"><span>${h.status || "sent"}</span></div>
+    </div>`)
+    .join("");
+  els.alertHistory.innerHTML = historyHtml || `<div class="alert-empty">No alert history</div>`;
+}
+
+async function sendTelegramAlertMessage(text) {
+  if (!state.currentUser || !state.authToken) return;
+  await authRequest("/api/notify/telegram", "POST", { text });
+}
+
+function pushAlertHistory(entry) {
+  state.alertHistory.push(entry);
+  if (state.alertHistory.length > ALERT_HISTORY_LIMIT) {
+    state.alertHistory.splice(0, state.alertHistory.length - ALERT_HISTORY_LIMIT);
+  }
+}
+
+function shouldTriggerAlert(direction, targetPrice, prevPrice, nextPrice) {
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0) return false;
+  if (!Number.isFinite(nextPrice) || nextPrice <= 0) return false;
+  if (direction === "below") {
+    if (Number.isFinite(prevPrice)) return prevPrice > targetPrice && nextPrice <= targetPrice;
+    return nextPrice <= targetPrice;
+  }
+  if (Number.isFinite(prevPrice)) return prevPrice < targetPrice && nextPrice >= targetPrice;
+  return nextPrice >= targetPrice;
+}
+
+function processAlertsForPrice(productType, symbol, prevPrice, nextPrice, ts) {
+  if (!state.currentUser) return;
+  const triggered = state.alerts.filter((a) =>
+    a.productType === productType
+    && a.symbol === symbol
+    && shouldTriggerAlert(a.direction, a.targetPrice, prevPrice, nextPrice)
+  );
+  if (!triggered.length) return;
+
+  const nowTs = Number.isFinite(ts) ? Number(ts) : Date.now();
+  const triggerPrice = Number.isFinite(nextPrice) ? Number(nextPrice) : NaN;
+  const triggeredIds = new Set(triggered.map((a) => a.id));
+  state.alerts = state.alerts.filter((a) => !triggeredIds.has(a.id));
+  markStateDirty();
+  renderAlerts();
+  savePersistentState();
+
+  for (const alert of triggered) {
+    const history = {
+      id: `${alert.id}-${nowTs}`,
+      productType: alert.productType,
+      symbol: alert.symbol,
+      direction: alert.direction,
+      targetPrice: alert.targetPrice,
+      triggerPrice,
+      triggerTs: nowTs,
+      status: "sent",
+    };
+    pushAlertHistory(history);
+    const text = `[Bitget Alert] ${alert.symbol} (${alert.productType}) hit ${fmtPriceFixed(triggerPrice, 6)}. Target ${alertDirectionLabel(alert.direction)} ${fmtPriceFixed(alert.targetPrice, 6)}.`;
+    sendTelegramAlertMessage(text).catch((err) => {
+      history.status = `failed: ${err instanceof Error ? err.message : "send error"}`;
+      renderAlerts();
+      markStateDirty();
+      savePersistentState();
+    });
+  }
+  renderAlerts();
+  markStateDirty();
+  savePersistentState();
+}
+
+function createPriceAlert() {
+  if (!state.currentUser) {
+    alert("Please login first.");
+    return;
+  }
+  const productType = els.productType.value;
+  const symbol = (els.symbol.value || "").trim().toUpperCase();
+  const direction = els.alertDirection.value === "below" ? "below" : "above";
+  const targetPrice = Number(els.alertTargetPrice.value);
+  if (!symbol) {
+    alert("Select a symbol first.");
+    return;
+  }
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+    alert("Target price must be a positive number.");
+    return;
+  }
+  const item = {
+    id: state.nextAlertId++,
+    productType,
+    symbol,
+    direction,
+    targetPrice,
+    createdTs: Date.now(),
+  };
+  state.alerts.push(item);
+  markStateDirty();
+  renderAlerts();
+  savePersistentState();
+  els.alertTargetPrice.value = "";
+}
+
 function setAuthLockedUi(locked) {
   for (const panel of els.authRequiredPanels) {
     panel.style.display = locked ? "none" : "block";
@@ -855,6 +1035,9 @@ function setAuthLockedUi(locked) {
   els.headerLogoutBtn.style.display = locked ? "none" : "inline-block";
   
   els.openPosition.disabled = locked;
+  if (els.addAlertBtn) {
+    els.addAlertBtn.disabled = locked;
+  }
   els.resetAccount.disabled = locked || getEstimatedEquity() >= 100;
   els.fullReset.disabled = locked;
 }
@@ -884,6 +1067,7 @@ function applyLoggedInState(username, token, accountState) {
   syncWsSubscriptions();
   renderPositions();
   renderClosed();
+  renderAlerts();
   renderAccountStats();
   renderAuthStatus();
 }
@@ -924,6 +1108,7 @@ async function logoutUser(message = "Logged out.") {
   syncWsSubscriptions();
   renderPositions();
   renderClosed();
+  renderAlerts();
   renderAccountStats();
   renderAuthStatus(message);
 }
@@ -1439,6 +1624,12 @@ function bindEvents() {
     });
   });
 
+  if (els.addAlertBtn) {
+    els.addAlertBtn.addEventListener("click", () => {
+      createPriceAlert();
+    });
+  }
+
   els.positionsBody.addEventListener("click", (evt) => {
     const target = evt.target;
     if (!(target instanceof HTMLElement)) return;
@@ -1515,6 +1706,23 @@ function bindEvents() {
     }
     updateTpSlPreview(id, role, target.value);
   });
+
+  if (els.activeAlerts) {
+    els.activeAlerts.addEventListener("click", (evt) => {
+      const target = evt.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.dataset.action !== "alert-remove") return;
+      const id = Number(target.dataset.id);
+      if (!id) return;
+      const before = state.alerts.length;
+      state.alerts = state.alerts.filter((a) => a.id !== id);
+      if (state.alerts.length !== before) {
+        markStateDirty();
+        renderAlerts();
+        savePersistentState();
+      }
+    });
+  }
 
   els.resetAccount.addEventListener("click", () => {
     if (!state.currentUser) {
@@ -1638,6 +1846,7 @@ async function init() {
   renderSymbols();
   renderPositions();
   renderClosed();
+  renderAlerts();
   renderAccountStats();
   connectMarketWs();
   syncWsSubscriptions();

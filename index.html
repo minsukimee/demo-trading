@@ -75,12 +75,39 @@
 
       <div class="stats" id="marketStats"></div>
 
+      <div class="form-grid">
+        <label>Alert Direction
+          <select id="alertDirection">
+            <option value="above">Price Above</option>
+            <option value="below">Price Below</option>
+          </select>
+        </label>
+        <label>Target Price
+          <input id="alertTargetPrice" type="number" step="any" placeholder="e.g. 95000" />
+        </label>
+      </div>
+
       <div class="actions">
         <button id="openPosition" type="button">Open Position</button>
+        <button id="addAlertBtn" class="secondary" type="button">Add Price Alert</button>
       </div>
       <p class="note">
         Fees default to Bitget futures public rates when available from contract data; otherwise fallback maker 0.02% / taker 0.06%.
       </p>
+    </section>
+
+    <section class="panel requires-auth alert-dashboard">
+      <h2>Price Alerts</h2>
+      <div class="alert-grid">
+        <div class="alert-col">
+          <h3>Active Alerts</h3>
+          <div id="activeAlerts" class="alert-list"></div>
+        </div>
+        <div class="alert-col">
+          <h3>Alert History</h3>
+          <div id="alertHistory" class="alert-list"></div>
+        </div>
+      </div>
     </section>
 
     <section class="panel requires-auth">
@@ -143,6 +170,6 @@
     </section>
   </main>
 
-  <script src="app.js?v=20260228_2"></script>
+  <script src="app.js?v=20260228_3"></script>
 </body>
 </html>

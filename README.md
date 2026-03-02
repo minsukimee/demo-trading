@@ -22,6 +22,15 @@ Account data is now saved server-side in `data/accounts.json` (created automatic
    - Build output directory: `/`
 4. Deploy.
 
+### Telegram Alert Setup (Cloudflare)
+
+To enable Telegram price-hit notifications from the web app, add these Pages environment variables:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+Then redeploy the project.
+
 This repo already includes a Pages Function at `functions/api/bitget/[[path]].js` that proxies Bitget REST requests from `/api/bitget/*`, so the app works in browser environments like iPhone/iPad Safari and Chrome without running `server.py`.
 
 ## Key Features

@@ -27,10 +27,13 @@ SESSIONS_LOCK = threading.Lock()
 def _default_state() -> dict:
     return {
         "nextId": 1,
+        "nextAlertId": 1,
         "equityStart": 1000,
         "realizedPnl": 0,
         "positions": [],
         "closed": [],
+        "alerts": [],
+        "alertHistory": [],
     }
 
 
@@ -131,6 +134,8 @@ class AppHandler(SimpleHTTPRequestHandler):
         safe = _default_state()
         if isinstance(candidate.get("nextId"), (int, float)) and candidate["nextId"] > 0:
             safe["nextId"] = int(candidate["nextId"])
+        if isinstance(candidate.get("nextAlertId"), (int, float)) and candidate["nextAlertId"] > 0:
+            safe["nextAlertId"] = int(candidate["nextAlertId"])
         if isinstance(candidate.get("equityStart"), (int, float)) and candidate["equityStart"] > 0:
             safe["equityStart"] = float(candidate["equityStart"])
         if isinstance(candidate.get("realizedPnl"), (int, float)):
@@ -139,6 +144,10 @@ class AppHandler(SimpleHTTPRequestHandler):
             safe["positions"] = candidate["positions"][:3000]
         if isinstance(candidate.get("closed"), list):
             safe["closed"] = candidate["closed"][:10000]
+        if isinstance(candidate.get("alerts"), list):
+            safe["alerts"] = candidate["alerts"][:2000]
+        if isinstance(candidate.get("alertHistory"), list):
+            safe["alertHistory"] = candidate["alertHistory"][:300]
         return safe
 
     def _handle_auth_register(self) -> None:

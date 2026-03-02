@@ -7,6 +7,9 @@ function validateState(candidate) {
   if (typeof candidate.nextId === "number" && candidate.nextId > 0) {
     safe.nextId = Math.floor(candidate.nextId);
   }
+  if (typeof candidate.nextAlertId === "number" && candidate.nextAlertId > 0) {
+    safe.nextAlertId = Math.floor(candidate.nextAlertId);
+  }
   if (typeof candidate.equityStart === "number" && candidate.equityStart > 0) {
     safe.equityStart = candidate.equityStart;
   }
@@ -18,6 +21,12 @@ function validateState(candidate) {
   }
   if (Array.isArray(candidate.closed)) {
     safe.closed = candidate.closed.slice(0, 10000);
+  }
+  if (Array.isArray(candidate.alerts)) {
+    safe.alerts = candidate.alerts.slice(0, 2000);
+  }
+  if (Array.isArray(candidate.alertHistory)) {
+    safe.alertHistory = candidate.alertHistory.slice(0, 300);
   }
   return safe;
 }

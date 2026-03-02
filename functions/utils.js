@@ -72,8 +72,11 @@ export async function deleteSession(kv, token) {
 
 export const defaultState = {
   nextId: 1,
+  nextAlertId: 1,
   equityStart: 1000,
   realizedPnl: 0,
   positions: [],
   closed: [],
+  alerts: [],
+  alertHistory: [],
 };
