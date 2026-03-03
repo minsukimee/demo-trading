@@ -15,6 +15,8 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 8000
 BITGET_BASE = "https://api.bitget.com"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 DATA_FILE = Path("data/accounts.json")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 PW_MIN_LEN = 6
@@ -94,6 +96,9 @@ class AppHandler(SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/auth/logout"):
             self._handle_auth_logout()
+            return
+        if self.path.startswith("/api/notify/telegram"):
+            self._handle_notify_telegram()
             return
         self._send_json({"ok": False, "error": "Not found"}, HTTPStatus.NOT_FOUND)
 
@@ -231,6 +236,55 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return
             user_state = user.get("state") if isinstance(user.get("state"), dict) else _default_state()
         self._send_json({"ok": True, "username": username, "state": user_state})
+
+    def _handle_notify_telegram(self) -> None:
+        username = self._auth_user()
+        if not username:
+            self._send_json({"ok": False, "error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
+            return
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            self._send_json(
+                {"ok": False, "error": "Telegram not configured on local server"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+        body = self._read_json_body()
+        if not isinstance(body, dict):
+            self._send_json({"ok": False, "error": "Invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+            return
+        text = str(body.get("text", "")).strip()
+        if not text:
+            self._send_json({"ok": False, "error": "Message text is required"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = json.dumps(
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": True,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Accept": "application/json",
+                "User-Agent": "demo-trading-local/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+                parsed = json.loads(raw) if raw else {}
+                if not parsed.get("ok"):
+                    self._send_json({"ok": False, "error": "Telegram send failed", "details": parsed}, HTTPStatus.BAD_GATEWAY)
+                    return
+                self._send_json({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"ok": False, "error": "Telegram send failed", "details": str(exc)}, HTTPStatus.BAD_GATEWAY)
 
     def _handle_account_state_get(self) -> None:
         username = self._auth_user()

@@ -15,6 +15,7 @@ const state = {
   authToken: null,
   authMode: "server",
   isStateDirty: false,
+  lastMarketUpdateTs: 0,
 };
 
 const DEFAULT_MAKER_FEE = 0.0002;
@@ -22,8 +23,10 @@ const DEFAULT_TAKER_FEE = 0.0006;
 const FUNDING_INTERVAL_MS = 8 * 60 * 60 * 1000;
 const WS_URL = "wss://ws.bitget.com/v2/ws/public";
 const WS_PING_INTERVAL_MS = 20000;
-const WS_RECONNECT_MS = 3000;
-const REST_FALLBACK_INTERVAL_MS = 20000;
+const WS_RECONNECT_MS = 1500;
+const REST_FALLBACK_INTERVAL_MS = 8000;
+const STALE_MARKET_RELOAD_MS = 5000;
+const STALE_CHECK_INTERVAL_MS = 2000;
 const RECOMPUTE_INTERVAL_MS = 1000;
 const STATE_SAVE_INTERVAL_MS = 5000;
 const ACCOUNT_PULL_INTERVAL_MS = 7000;
@@ -592,6 +595,7 @@ async function loadTickers(productType) {
       ts: parseMsTimestamp(r.ts ?? r.systemTime) ?? Date.now(),
     };
     map.set(symbol, next);
+    state.lastMarketUpdateTs = Math.max(state.lastMarketUpdateTs || 0, Number.isFinite(next.ts) ? next.ts : Date.now());
     const prev = prevMap.get(symbol);
     processAlertsForPrice(productType, symbol, prev?.markPrice, next.markPrice, next.ts);
   }
@@ -697,14 +701,27 @@ function getDesiredSubKeys() {
   for (const pos of state.positions) {
     keys.add(subKey(pos.productType, pos.symbol));
   }
+  for (const alert of state.alerts) {
+    keys.add(subKey(alert.productType, alert.symbol));
+  }
   return keys;
 }
 
 function wsArgsFromKeys(keys) {
   return [...keys].map((key) => {
-    const { productType, symbol } = parseSubKey(key);
-    return { instType: productType, channel: "ticker", instId: symbol };
+    const [productType, symbol, channel = "ticker"] = key.split("|");
+    return { instType: productType, channel, instId: symbol };
   });
+}
+
+function wsStreamKeysFromSymbolKeys(symbolKeys) {
+  const out = new Set();
+  for (const key of symbolKeys) {
+    const { productType, symbol } = parseSubKey(key);
+    out.add(`${productType}|${symbol}|ticker`);
+    out.add(`${productType}|${symbol}|trade`);
+  }
+  return out;
 }
 
 function wsSend(op, args) {
@@ -715,7 +732,7 @@ function wsSend(op, args) {
 
 function syncWsSubscriptions() {
   if (!wsState.isOpen) return;
-  const desired = getDesiredSubKeys();
+  const desired = wsStreamKeysFromSymbolKeys(getDesiredSubKeys());
   const toUnsub = [...wsState.subscribed].filter((k) => !desired.has(k));
   const toSub = [...desired].filter((k) => !wsState.subscribed.has(k));
 
@@ -752,7 +769,29 @@ function upsertTickerFromWs(productType, symbol, row) {
     ts: parseMsTimestamp(row.ts ?? row.systemTime) ?? Date.now(),
   };
   byProduct.set(symbol, next);
+  state.lastMarketUpdateTs = Number.isFinite(next.ts) ? next.ts : Date.now();
   processAlertsForPrice(productType, symbol, prev.markPrice, next.markPrice, next.ts);
+}
+
+function upsertTickerFromTrade(productType, symbol, row) {
+  if (!productType || !symbol) return;
+  if (!state.tickersByProduct.has(productType)) {
+    state.tickersByProduct.set(productType, new Map());
+  }
+  const byProduct = state.tickersByProduct.get(productType);
+  const prev = byProduct.get(symbol) || { markPrice: NaN, lastPrice: NaN, fundingRate: 0, pricePrecision: null, ts: null };
+  const tradePrice = parseFloat(row.price ?? row.lastPr ?? row.last ?? row.p ?? "");
+  const nextTs = parseMsTimestamp(row.ts ?? row.systemTime ?? row.t) ?? Date.now();
+  const next = {
+    markPrice: Number.isFinite(tradePrice) ? tradePrice : prev.markPrice,
+    lastPrice: Number.isFinite(tradePrice) ? tradePrice : prev.lastPrice,
+    fundingRate: prev.fundingRate ?? 0,
+    pricePrecision: detectPrecision(String(row.price ?? row.lastPr ?? row.last ?? row.p ?? "")) ?? prev.pricePrecision,
+    ts: nextTs,
+  };
+  byProduct.set(symbol, next);
+  state.lastMarketUpdateTs = nextTs;
+  processAlertsForPrice(productType, symbol, prev.markPrice, next.markPrice, nextTs);
 }
 
 function connectMarketWs() {
@@ -788,12 +827,16 @@ function connectMarketWs() {
 
     if (!msg || !msg.arg || !Array.isArray(msg.data)) return;
     const channel = msg.arg.channel || "";
-    if (channel !== "ticker") return;
+    if (channel !== "ticker" && channel !== "trade") return;
 
     const productType = msg.arg.instType || msg.arg.productType || "";
     for (const row of msg.data) {
       const symbol = row.symbol || row.instId || msg.arg.instId || "";
-      upsertTickerFromWs(productType, symbol, row);
+      if (channel === "trade") {
+        upsertTickerFromTrade(productType, symbol, row);
+      } else {
+        upsertTickerFromWs(productType, symbol, row);
+      }
     }
 
     for (const pos of [...state.positions]) {
@@ -1854,6 +1897,14 @@ async function init() {
   setInterval(() => {
     refreshMarket().catch((err) => console.error("refresh failed", err));
   }, REST_FALLBACK_INTERVAL_MS);
+
+  setInterval(() => {
+    const now = Date.now();
+    const last = Number.isFinite(state.lastMarketUpdateTs) ? state.lastMarketUpdateTs : 0;
+    if (now - last > STALE_MARKET_RELOAD_MS) {
+      refreshMarket().catch((err) => console.error("stale refresh failed", err));
+    }
+  }, STALE_CHECK_INTERVAL_MS);
 
   setInterval(() => {
     for (const pos of [...state.positions]) {
