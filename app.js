@@ -587,9 +587,12 @@ async function loadTickers(productType) {
   for (const r of rows) {
     const symbol = r.symbol;
     if (!symbol) continue;
+    const mark = parseFloat(r.markPrice ?? "");
+    const last = parseFloat(r.lastPr ?? r.last ?? "");
+    const best = firstFinite(mark, last);
     const next = {
-      markPrice: parseFloat(r.markPrice ?? r.lastPr ?? r.last ?? ""),
-      lastPrice: parseFloat(r.lastPr ?? r.last ?? ""),
+      markPrice: best,
+      lastPrice: Number.isFinite(last) ? last : best,
       fundingRate: parseFloat(r.fundingRate ?? "0"),
       pricePrecision: detectPrecision(r.markPrice ?? r.lastPr ?? r.last ?? ""),
       ts: parseMsTimestamp(r.ts ?? r.systemTime) ?? Date.now(),
@@ -597,7 +600,16 @@ async function loadTickers(productType) {
     map.set(symbol, next);
     state.lastMarketUpdateTs = Math.max(state.lastMarketUpdateTs || 0, Number.isFinite(next.ts) ? next.ts : Date.now());
     const prev = prevMap.get(symbol);
-    processAlertsForPrice(productType, symbol, prev?.markPrice, next.markPrice, next.ts);
+    const prevBest = firstFinite(prev?.markPrice, prev?.lastPrice);
+    processAlertsForPrice(
+      productType,
+      symbol,
+      prevBest,
+      best,
+      next.ts,
+      [prev?.markPrice, prev?.lastPrice],
+      [mark, last, next.markPrice, next.lastPrice]
+    );
   }
   state.tickersByProduct.set(productType, map);
 }
@@ -761,16 +773,30 @@ function upsertTickerFromWs(productType, symbol, row) {
   }
   const byProduct = state.tickersByProduct.get(productType);
   const prev = byProduct.get(symbol) || { markPrice: NaN, lastPrice: NaN, fundingRate: 0, pricePrecision: null, ts: null };
+  const rowMark = parseFloat(row.markPrice ?? "");
+  const rowLast = parseFloat(row.lastPr ?? row.last ?? "");
+  const rowBid = parseFloat(row.bidPr ?? row.bidPrice ?? "");
+  const rowAsk = parseFloat(row.askPr ?? row.askPrice ?? "");
+  const prevBest = firstFinite(prev.markPrice, prev.lastPrice);
+  const nextBest = firstFinite(rowMark, rowLast, rowBid, rowAsk, prevBest);
   const next = {
-    markPrice: parseFloat(row.markPrice ?? row.lastPr ?? row.last ?? prev.markPrice),
-    lastPrice: parseFloat(row.lastPr ?? row.last ?? prev.lastPrice),
+    markPrice: nextBest,
+    lastPrice: Number.isFinite(rowLast) ? rowLast : nextBest,
     fundingRate: parseFloat(row.fundingRate ?? prev.fundingRate ?? 0),
-    pricePrecision: detectPrecision(row.markPrice ?? row.lastPr ?? row.last ?? "") ?? prev.pricePrecision,
+    pricePrecision: detectPrecision(String(row.markPrice ?? row.lastPr ?? row.last ?? row.bidPr ?? row.askPr ?? "")) ?? prev.pricePrecision,
     ts: parseMsTimestamp(row.ts ?? row.systemTime) ?? Date.now(),
   };
   byProduct.set(symbol, next);
   state.lastMarketUpdateTs = Number.isFinite(next.ts) ? next.ts : Date.now();
-  processAlertsForPrice(productType, symbol, prev.markPrice, next.markPrice, next.ts);
+  processAlertsForPrice(
+    productType,
+    symbol,
+    prevBest,
+    nextBest,
+    next.ts,
+    [prev.markPrice, prev.lastPrice],
+    [rowMark, rowLast, rowBid, rowAsk, next.markPrice, next.lastPrice]
+  );
 }
 
 function upsertTickerFromTrade(productType, symbol, row) {
@@ -780,18 +806,28 @@ function upsertTickerFromTrade(productType, symbol, row) {
   }
   const byProduct = state.tickersByProduct.get(productType);
   const prev = byProduct.get(symbol) || { markPrice: NaN, lastPrice: NaN, fundingRate: 0, pricePrecision: null, ts: null };
-  const tradePrice = parseFloat(row.price ?? row.lastPr ?? row.last ?? row.p ?? "");
+  const tradePrice = parseFloat(row.price ?? row.lastPr ?? row.last ?? row.p ?? row.tradePrice ?? row.px ?? "");
   const nextTs = parseMsTimestamp(row.ts ?? row.systemTime ?? row.t) ?? Date.now();
+  const prevBest = firstFinite(prev.lastPrice, prev.markPrice);
+  const nextBest = firstFinite(tradePrice, prevBest);
   const next = {
-    markPrice: Number.isFinite(tradePrice) ? tradePrice : prev.markPrice,
-    lastPrice: Number.isFinite(tradePrice) ? tradePrice : prev.lastPrice,
+    markPrice: nextBest,
+    lastPrice: nextBest,
     fundingRate: prev.fundingRate ?? 0,
-    pricePrecision: detectPrecision(String(row.price ?? row.lastPr ?? row.last ?? row.p ?? "")) ?? prev.pricePrecision,
+    pricePrecision: detectPrecision(String(row.price ?? row.lastPr ?? row.last ?? row.p ?? row.tradePrice ?? row.px ?? "")) ?? prev.pricePrecision,
     ts: nextTs,
   };
   byProduct.set(symbol, next);
   state.lastMarketUpdateTs = nextTs;
-  processAlertsForPrice(productType, symbol, prev.markPrice, next.markPrice, nextTs);
+  processAlertsForPrice(
+    productType,
+    symbol,
+    prevBest,
+    nextBest,
+    nextTs,
+    [prev.markPrice, prev.lastPrice],
+    [tradePrice, next.markPrice, next.lastPrice]
+  );
 }
 
 function connectMarketWs() {
@@ -826,13 +862,13 @@ function connectMarketWs() {
     }
 
     if (!msg || !msg.arg || !Array.isArray(msg.data)) return;
-    const channel = msg.arg.channel || "";
-    if (channel !== "ticker" && channel !== "trade") return;
+    const channel = (msg.arg.channel || "").toLowerCase();
+    if (channel !== "ticker" && channel !== "trade" && channel !== "trades") return;
 
     const productType = msg.arg.instType || msg.arg.productType || "";
     for (const row of msg.data) {
       const symbol = row.symbol || row.instId || msg.arg.instId || "";
-      if (channel === "trade") {
+      if (channel === "trade" || channel === "trades") {
         upsertTickerFromTrade(productType, symbol, row);
       } else {
         upsertTickerFromWs(productType, symbol, row);
@@ -990,12 +1026,36 @@ function shouldTriggerAlert(direction, targetPrice, prevPrice, nextPrice) {
   return nextPrice >= targetPrice;
 }
 
-function processAlertsForPrice(productType, symbol, prevPrice, nextPrice, ts) {
+function firstFinite(...values) {
+  for (const v of values) {
+    if (Number.isFinite(v)) return Number(v);
+  }
+  return NaN;
+}
+
+function shouldTriggerByEnvelope(direction, targetPrice, prevCandidates, nextCandidates) {
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0) return false;
+  const prices = [...prevCandidates, ...nextCandidates].filter((v) => Number.isFinite(v) && v > 0);
+  if (!prices.length) return false;
+  const lo = Math.min(...prices);
+  const hi = Math.max(...prices);
+  if (direction === "below") {
+    return lo <= targetPrice;
+  }
+  return hi >= targetPrice;
+}
+
+function processAlertsForPrice(productType, symbol, prevPrice, nextPrice, ts, prevCandidates = [], nextCandidates = []) {
   if (!state.currentUser) return;
+  const prevAll = [...prevCandidates];
+  const nextAll = [...nextCandidates];
+  if (Number.isFinite(prevPrice)) prevAll.push(prevPrice);
+  if (Number.isFinite(nextPrice)) nextAll.push(nextPrice);
   const triggered = state.alerts.filter((a) =>
     a.productType === productType
     && a.symbol === symbol
-    && shouldTriggerAlert(a.direction, a.targetPrice, prevPrice, nextPrice)
+    && (shouldTriggerAlert(a.direction, a.targetPrice, prevPrice, nextPrice)
+      || shouldTriggerByEnvelope(a.direction, a.targetPrice, prevAll, nextAll))
   );
   if (!triggered.length) return;
 
@@ -1057,6 +1117,39 @@ function createPriceAlert() {
     targetPrice,
     createdTs: Date.now(),
   };
+
+  const ticker = getTicker(productType, symbol);
+  const currentPrice = firstFinite(ticker?.markPrice, ticker?.lastPrice);
+  const immediateHit = direction === "below"
+    ? (Number.isFinite(currentPrice) && currentPrice <= targetPrice)
+    : (Number.isFinite(currentPrice) && currentPrice >= targetPrice);
+  if (immediateHit) {
+    const nowTs = Number.isFinite(ticker?.ts) ? Number(ticker.ts) : Date.now();
+    const history = {
+      id: `${item.id}-${nowTs}`,
+      productType: item.productType,
+      symbol: item.symbol,
+      direction: item.direction,
+      targetPrice: item.targetPrice,
+      triggerPrice: currentPrice,
+      triggerTs: nowTs,
+      status: "sent",
+    };
+    pushAlertHistory(history);
+    const text = `[Bitget Alert] ${item.symbol} (${item.productType}) hit ${fmtPriceFixed(currentPrice, 6)}. Target ${alertDirectionLabel(item.direction)} ${fmtPriceFixed(item.targetPrice, 6)}.`;
+    sendTelegramAlertMessage(text).catch((err) => {
+      history.status = `failed: ${err instanceof Error ? err.message : "send error"}`;
+      renderAlerts();
+      markStateDirty();
+      savePersistentState();
+    });
+    markStateDirty();
+    renderAlerts();
+    savePersistentState();
+    els.alertTargetPrice.value = "";
+    return;
+  }
+
   state.alerts.push(item);
   markStateDirty();
   renderAlerts();
