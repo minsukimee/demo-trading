@@ -269,6 +269,7 @@ function applyAccountPayload(parsed) {
       openTs: Number.isFinite(p.openTs) ? Number(p.openTs) : Date.now(),
       lastFundingTs: Number.isFinite(p.lastFundingTs) ? Number(p.lastFundingTs) : Date.now(),
       lastMarkTs: Number.isFinite(p.lastMarkTs) ? Number(p.lastMarkTs) : Date.now(),
+      lastTriggerPrice: Number.isFinite(p.lastTriggerPrice) ? Number(p.lastTriggerPrice) : (Number.isFinite(p.markPrice) ? Number(p.markPrice) : NaN),
       closeLimitPrice: p.closeLimitPrice == null ? null : Number(p.closeLimitPrice),
       tpPrice: p.tpPrice == null ? null : Number(p.tpPrice),
       slPrice: p.slPrice == null ? null : Number(p.slPrice),
@@ -526,6 +527,24 @@ function closePreviewHtml(label, price, pos) {
   const priceText = Number.isFinite(price) ? fmtPriceFixed(price, pos.pricePrecision) : "-";
   const pnlText = Number.isFinite(realizedPnl) ? fmt(realizedPnl) : "-";
   return `${label} @ ${priceText} | Est PnL: <span class="${pnlClass}">${pnlText}</span> USDT | Close Fee: ${fmt(closeFee)} USDT`;
+}
+
+function priceEpsilon(value) {
+  if (!Number.isFinite(value)) return 1e-10;
+  return Math.max(Math.abs(value) * 1e-8, 1e-10);
+}
+
+function hitByBand(mode, triggerPrice, prevValues, nextValues) {
+  if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) return false;
+  const values = [...prevValues, ...nextValues].filter((v) => Number.isFinite(v) && v > 0);
+  if (!values.length) return false;
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const eps = priceEpsilon(triggerPrice);
+  if (mode === "up") {
+    return hi >= triggerPrice - eps;
+  }
+  return lo <= triggerPrice + eps;
 }
 
 function tpSlPreviewHtml(label, price, pos) {
@@ -1351,6 +1370,11 @@ function recomputePosition(pos) {
   const prevMark = Number.isFinite(pos.markPrice) ? pos.markPrice : ticker.markPrice;
   const prevTs = Number.isFinite(pos.lastMarkTs) ? pos.lastMarkTs : pos.lastFundingTs;
   const nextMark = ticker.markPrice;
+  const nextLast = Number.isFinite(ticker.lastPrice) ? ticker.lastPrice : nextMark;
+  const prevTrigger = Number.isFinite(pos.lastTriggerPrice) ? pos.lastTriggerPrice : prevMark;
+  const nextTrigger = firstFinite(nextLast, nextMark, prevTrigger);
+  const prevBand = [prevMark, prevTrigger];
+  const nextBand = [nextMark, nextLast, nextTrigger];
   const nextTs = now;
   pos.markPrice = nextMark;
   const { net } = calcUnrealized(pos, pos.markPrice);
@@ -1359,35 +1383,36 @@ function recomputePosition(pos) {
   pos.liqPrice = calcLiqPrice(pos, pos.markPrice);
 
   if (pos.closeLimitPrice != null) {
-    const hitCloseLimit = didCrossThreshold(pos.side, prevMark, nextMark, pos.closeLimitPrice, "up")
-      || ((pos.side === "long" && nextMark >= pos.closeLimitPrice) || (pos.side === "short" && nextMark <= pos.closeLimitPrice));
+    const limitMode = pos.side === "long" ? "up" : "down";
+    const hitCloseLimit = hitByBand(limitMode, pos.closeLimitPrice, prevBand, nextBand);
     if (hitCloseLimit) {
-      const closeTs = estimateCrossTimestamp(prevMark, nextMark, prevTs, nextTs, pos.closeLimitPrice);
+      const closeTs = estimateCrossTimestamp(prevTrigger, nextTrigger, prevTs, nextTs, pos.closeLimitPrice);
       closePosition(pos.id, "Limit Close", pos.closeLimitPrice, closeTs);
       return;
     }
   }
 
-  const tpCross = pos.tpPrice != null && didCrossThreshold(pos.side, prevMark, nextMark, pos.tpPrice, "up");
-  const slCross = pos.slPrice != null && didCrossThreshold(pos.side, prevMark, nextMark, pos.slPrice, "down");
-  const tpNow = pos.tpPrice != null && ((pos.side === "long" && nextMark >= pos.tpPrice) || (pos.side === "short" && nextMark <= pos.tpPrice));
-  const slNow = pos.slPrice != null && ((pos.side === "long" && nextMark <= pos.slPrice) || (pos.side === "short" && nextMark >= pos.slPrice));
+  const tpMode = pos.side === "long" ? "up" : "down";
+  const slMode = pos.side === "long" ? "down" : "up";
+  const tpCross = pos.tpPrice != null && hitByBand(tpMode, pos.tpPrice, prevBand, nextBand);
+  const slCross = pos.slPrice != null && hitByBand(slMode, pos.slPrice, prevBand, nextBand);
 
-  if (tpCross || slCross || tpNow || slNow) {
-    const reason = (tpCross || tpNow) ? "TP" : "SL";
+  if (tpCross || slCross) {
+    const reason = tpCross ? "TP" : "SL";
     const triggerPrice = reason === "TP" ? pos.tpPrice : pos.slPrice;
-    const closeTs = estimateCrossTimestamp(prevMark, nextMark, prevTs, nextTs, triggerPrice);
-    closePosition(pos.id, reason, null, closeTs);
+    const closeTs = estimateCrossTimestamp(prevTrigger, nextTrigger, prevTs, nextTs, triggerPrice);
+    closePosition(pos.id, reason, triggerPrice, closeTs);
     return;
   }
 
-  const liqCross = didCrossThreshold(pos.side, prevMark, nextMark, pos.liqPrice, "down");
-  const liquidated = liqCross || ((pos.side === "long" && nextMark <= pos.liqPrice) || (pos.side === "short" && nextMark >= pos.liqPrice));
+  const liqMode = pos.side === "long" ? "down" : "up";
+  const liquidated = hitByBand(liqMode, pos.liqPrice, prevBand, nextBand);
   if (liquidated) {
-    const closeTs = estimateCrossTimestamp(prevMark, nextMark, prevTs, nextTs, pos.liqPrice);
-    closePosition(pos.id, "Liq", null, closeTs);
+    const closeTs = estimateCrossTimestamp(prevTrigger, nextTrigger, prevTs, nextTs, pos.liqPrice);
+    closePosition(pos.id, "Liq", pos.liqPrice, closeTs);
     return;
   }
+  pos.lastTriggerPrice = nextTrigger;
   pos.lastMarkTs = nextTs;
 }
 
@@ -1486,6 +1511,7 @@ async function openPosition() {
     fundingAccrued: 0,
     lastFundingTs: Number.isFinite(ticker.ts) ? ticker.ts : Date.now(),
     lastMarkTs: Number.isFinite(ticker.ts) ? ticker.ts : Date.now(),
+    lastTriggerPrice: Number.isFinite(ticker.lastPrice) ? ticker.lastPrice : ticker.markPrice,
     makerFeeRate,
     takerFeeRate,
     openFee,
